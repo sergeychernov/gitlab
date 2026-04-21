@@ -2,6 +2,12 @@
 
 # gitlab-pipeline-stats
 
+[![npm](https://img.shields.io/npm/v/gitlab-pipeline-stats.svg)](https://www.npmjs.com/package/gitlab-pipeline-stats)
+[![GitHub](https://img.shields.io/badge/GitHub-sergeychernov%2Fgitlab-181717?logo=github)](https://github.com/sergeychernov/gitlab)
+
+- Source code: [github.com/sergeychernov/gitlab](https://github.com/sergeychernov/gitlab)
+- npm package: [npmjs.com/package/gitlab-pipeline-stats](https://www.npmjs.com/package/gitlab-pipeline-stats)
+
 Quick stats for the latest N GitLab pipelines.  
 For every job it computes `count / avg / p50 / p95 / max` of execution duration.
 
@@ -245,6 +251,12 @@ MIT
 ____
 
 # gitlab-pipeline-stats
+
+[![npm](https://img.shields.io/npm/v/gitlab-pipeline-stats.svg)](https://www.npmjs.com/package/gitlab-pipeline-stats)
+[![GitHub](https://img.shields.io/badge/GitHub-sergeychernov%2Fgitlab-181717?logo=github)](https://github.com/sergeychernov/gitlab)
+
+- Исходники: [github.com/sergeychernov/gitlab](https://github.com/sergeychernov/gitlab)
+- Пакет в npm: [npmjs.com/package/gitlab-pipeline-stats](https://www.npmjs.com/package/gitlab-pipeline-stats)
 
 Быстрая статистика по последним N пайплайнам GitLab.  
 Считает по каждой джобе `count / avg / p50 / p95 / max` длительности выполнения.
