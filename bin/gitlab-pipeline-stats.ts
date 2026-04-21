@@ -46,6 +46,7 @@ interface RenderRow {
 
 type ProjectIdSource = 'arg' | 'CI_PROJECT_PATH' | 'CI_PROJECT_ID' | 'git remote';
 type HostSource      = 'arg' | 'GITLAB_HOST'     | 'CI_SERVER_URL'  | 'git remote';
+type ConfigSource    = 'flag' | 'env' | 'cwd';
 
 interface GroupSpec {
     label: string;
@@ -75,6 +76,7 @@ interface Config {
     statusFilter:    string;
     configName:      string;   // что показать в шапке
     configPath:      string;   // абсолютный путь до загруженного JSON
+    configSource:    ConfigSource;
     groups:          GroupSpec[];
 }
 
@@ -109,9 +111,9 @@ const err  = (s: string): void => { process.stderr.write(s); };
 
 // --- Пути и пресеты ---------------------------------------------------------
 
-const SCRIPT_DIR     = import.meta.dirname;
-const CONFIGS_DIR    = path.join(SCRIPT_DIR, '..', 'configs');
-const DEFAULT_PRESET = 'gitflow';
+const SCRIPT_DIR        = import.meta.dirname;
+const CONFIGS_DIR       = path.join(SCRIPT_DIR, '..', 'configs');
+const DEFAULT_CONFIG_FILENAME = 'gitlab-pipeline-stats.json';
 
 function listBuiltinPresets(): string[] {
     if (!fs.existsSync(CONFIGS_DIR)) return [];
@@ -121,24 +123,27 @@ function listBuiltinPresets(): string[] {
         .sort();
 }
 
-// Резолвит --config <input>:
-//   1. если существует как файл → берём как путь;
-//   2. если "имя" без слешей → ищем в bundled configs/<name>.json;
-//   3. иначе ошибка.
+// Возвращает абсолютный путь к bundled пресету или undefined, если такого нет.
+function resolveBundledPreset(name: string): string | undefined {
+    if (!name || name.includes('/') || name.includes('\\')) return undefined;
+    const p = path.join(CONFIGS_DIR, `${name}.json`);
+    return fs.existsSync(p) ? p : undefined;
+}
+
+// Резолвит --config <path>: только путь к существующему JSON-файлу.
+// Имена встроенных пресетов больше не принимаются — используй
+//   gitlab-pipeline-stats init <preset> > my.json
+// чтобы получить файл, а потом передай путь явно.
 function resolveConfigPath(input: string): string {
     if (fs.existsSync(input) && fs.statSync(input).isFile()) {
         return path.resolve(input);
     }
-    const name = input.startsWith('@') ? input.slice(1) : input;
-    if (!name.includes('/') && !name.includes('\\')) {
-        const bundled = path.join(CONFIGS_DIR, `${name}.json`);
-        if (fs.existsSync(bundled)) return bundled;
-    }
-    const presets = listBuiltinPresets();
     throw new Error(
-        `Config not found: ${input}\n` +
-        `Available presets: ${presets.join(', ')}\n` +
-        `Or pass a path to your own JSON file.`
+        `Config file not found: ${input}\n` +
+        `--config expects a path to a JSON file.\n` +
+        `To get a starter config from a bundled preset:\n` +
+        `  gitlab-pipeline-stats init <preset> > ${DEFAULT_CONFIG_FILENAME}\n` +
+        `Bundled presets: ${listBuiltinPresets().join(', ')}`
     );
 }
 
@@ -185,9 +190,8 @@ function validateConfig(data: unknown, filePath: string): ConfigFile {
     return result;
 }
 
-function loadConfigFile(input: string): { name: string; absPath: string; data: ConfigFile } {
-    const absPath = resolveConfigPath(input);
-    const raw     = fs.readFileSync(absPath, 'utf8');
+function loadConfigFile(absPath: string): { name: string; absPath: string; data: ConfigFile } {
+    const raw = fs.readFileSync(absPath, 'utf8');
     let parsed: unknown;
     try {
         parsed = JSON.parse(raw);
@@ -196,9 +200,7 @@ function loadConfigFile(input: string): { name: string; absPath: string; data: C
         throw new Error(`Invalid JSON in ${absPath}: ${msg}`);
     }
     const data = validateConfig(parsed, absPath);
-    // имя для шапки: либо basename без расширения, либо сам input
-    const isBundled = absPath.startsWith(CONFIGS_DIR);
-    const name      = isBundled ? path.basename(absPath, '.json') : input;
+    const name = path.basename(absPath, '.json');
     return { name, absPath, data };
 }
 
@@ -222,9 +224,9 @@ function cmdListPresets(): void {
         }
         out(`  ${BOLD_WHITE}${name.padEnd(14)}${CR}${desc ? `${DIM}${desc}${CR}` : ''}\n`);
     }
-    out(`\nDefault preset: ${BOLD_WHITE}${DEFAULT_PRESET}${CR}\n`);
-    out(`Usage: gitlab-pipeline-stats <PROJECT_ID> --config <name|path>\n`);
-    out(`Copy a preset into a file:  gitlab-pipeline-stats init <name> > my.json\n`);
+    out(`\nUsage:\n`);
+    out(`  gitlab-pipeline-stats init <preset> > ${DEFAULT_CONFIG_FILENAME}\n`);
+    out(`  gitlab-pipeline-stats <PROJECT_ID> --config ./${DEFAULT_CONFIG_FILENAME}\n`);
 }
 
 function cmdInit(presetName: string | undefined): void {
@@ -233,12 +235,10 @@ function cmdInit(presetName: string | undefined): void {
         err(`Available: ${listBuiltinPresets().join(', ')}\n`);
         process.exit(1);
     }
-    let absPath: string;
-    try {
-        absPath = resolveConfigPath(presetName);
-    } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        err(`${msg}\n`);
+    const absPath = resolveBundledPreset(presetName);
+    if (!absPath) {
+        err(`Unknown preset: ${presetName}\n`);
+        err(`Available: ${listBuiltinPresets().join(', ')}\n`);
         process.exit(1);
     }
     out(fs.readFileSync(absPath, 'utf8'));
@@ -261,9 +261,14 @@ Arguments:
                              Explicit argument always wins over auto-detection.
 
 Options (override env / .env):
-  --config <name|path>       Bundled preset name or path to a JSON file.
-                             Bundled: ${listBuiltinPresets().join(', ')}
-                             [env: GITLAB_PIPELINE_STATS_CONFIG, default: ${DEFAULT_PRESET}]
+  --config <path>            Path to a JSON config file describing pipeline groups.
+                             Resolution order (first match wins):
+                               1. --config <path>
+                               2. env GITLAB_PIPELINE_STATS_CONFIG=<path>
+                               3. ./${DEFAULT_CONFIG_FILENAME} in the current directory
+                             To bootstrap from a bundled preset:
+                               gitlab-pipeline-stats init <preset> > ${DEFAULT_CONFIG_FILENAME}
+                             Bundled presets: ${listBuiltinPresets().join(', ')}
   --host <url>               GitLab host without trailing slash             [env: GITLAB_HOST]
                              Optional if it can be auto-detected from:
                                1. CI_SERVER_URL (inside GitLab CI)
@@ -274,11 +279,10 @@ Options (override env / .env):
   -h, --help                 Show help
 
 Examples:
-  gitlab-pipeline-stats                                    # auto-detect + default preset (${DEFAULT_PRESET})
-  gitlab-pipeline-stats 261
-  gitlab-pipeline-stats 261 --config trunk
+  gitlab-pipeline-stats init gitflow > ${DEFAULT_CONFIG_FILENAME}
+  gitlab-pipeline-stats                                    # auto-detect PROJECT_ID + ./${DEFAULT_CONFIG_FILENAME}
+  gitlab-pipeline-stats 261 --config ./${DEFAULT_CONFIG_FILENAME}
   gitlab-pipeline-stats 261 --config ./ci/groups.json
-  gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json
 `;
 
 // Кэш origin-URL: git remote вызывается один раз для host- и project-детекта.
@@ -457,12 +461,38 @@ function parseCli(): Config {
     }
 
     // --- Конфиг групп
-    const configInput = pick(values.config, process.env.GITLAB_PIPELINE_STATS_CONFIG, DEFAULT_PRESET) ?? DEFAULT_PRESET;
+    // Приоритет: --config → env GITLAB_PIPELINE_STATS_CONFIG → ./gitlab-pipeline-stats.json в cwd.
+    // Имена встроенных пресетов больше не принимаются — только путь к JSON.
+    let configInput: string | undefined = pick(values.config, process.env.GITLAB_PIPELINE_STATS_CONFIG);
+    let configSource: ConfigSource;
+    if (values.config !== undefined) {
+        configSource = 'flag';
+    } else if (process.env.GITLAB_PIPELINE_STATS_CONFIG) {
+        configSource = 'env';
+    } else {
+        const cwdConfig = path.resolve(process.cwd(), DEFAULT_CONFIG_FILENAME);
+        if (fs.existsSync(cwdConfig)) {
+            configInput  = cwdConfig;
+            configSource = 'cwd';
+        } else {
+            err(
+                `No config provided.\n` +
+                `Pass --config <path>, set GITLAB_PIPELINE_STATS_CONFIG, ` +
+                `or place ${DEFAULT_CONFIG_FILENAME} in the current directory.\n` +
+                `To bootstrap from a bundled preset:\n` +
+                `  gitlab-pipeline-stats init <preset> > ${DEFAULT_CONFIG_FILENAME}\n` +
+                `Bundled presets: ${listBuiltinPresets().join(', ')}\n`
+            );
+            process.exit(1);
+        }
+    }
+
     let configName: string;
     let configPath: string;
     let groups:     GroupSpec[];
     try {
-        const loaded = loadConfigFile(configInput);
+        const absPath = resolveConfigPath(configInput!);
+        const loaded  = loadConfigFile(absPath);
         configName = loaded.name;
         configPath = loaded.absPath;
         groups     = loaded.data.groups;
@@ -482,6 +512,7 @@ function parseCli(): Config {
         statusFilter: pick(values['status-filter'], process.env.JOB_STATUS_FILTER, 'success') ?? 'success',
         configName,
         configPath,
+        configSource,
         groups,
     };
 }
@@ -507,7 +538,7 @@ const HEADERS: Record<string, string> = { 'PRIVATE-TOKEN': cfg.token };
 
 out(`${DIM}GitLab:${CR}      ${cfg.host} ${DIM}(from ${cfg.hostSource})${CR}\n`);
 out(`${DIM}Project:${CR}     ${cfg.projectId} ${DIM}(from ${cfg.projectIdSource})${CR}\n`);
-out(`${DIM}Config:${CR}      ${cfg.configName} ${DIM}(${cfg.configPath})${CR}\n`);
+out(`${DIM}Config:${CR}      ${cfg.configName} ${DIM}(from ${cfg.configSource}: ${cfg.configPath})${CR}\n`);
 out(`${DIM}Pipelines:${CR}   ${cfg.limit} per group\n`);
 out(`${DIM}Job filter:${CR}  status=${cfg.statusFilter || '<any>'}\n`);
 

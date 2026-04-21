@@ -5,7 +5,7 @@
 Quick stats for the latest N GitLab pipelines.  
 For every job it computes `count / avg / p50 / p95 / max` of execution duration.
 
-Pipelines are grouped by type (e.g. `main` / `develop` / `release/*` / `feature/*` / `tags`); each group gets its own table. Groups are defined by a **preset** matching your release flow or by a **custom JSON config**.
+Pipelines are grouped by type (e.g. `main` / `develop` / `release/*` / `feature/*` / `tags`); each group gets its own table. Groups are defined by a **JSON config file**. The package ships a set of **bundled presets** (gitflow, github-flow, trunk) — generate a starter config from any of them with `init` and tweak it under version control. All presets assume the default branch is `main`; if you still use `master`, see [the note below](#bundled-presets).
 
 ## Installation
 
@@ -82,26 +82,48 @@ Each option can be set in three ways (in decreasing priority):
 
 | Flag                       | Env                            | Required | Default | Description |
 |----------------------------|--------------------------------|:---:|---|---|
-| `--config <name\|path>`    | `GITLAB_PIPELINE_STATS_CONFIG` | | `gitflow` | Preset name or path to a JSON groups config |
+| `--config <path>`          | `GITLAB_PIPELINE_STATS_CONFIG` | ✓² | `./gitlab-pipeline-stats.json` | Path to a JSON groups config. Bundled preset names are **not** accepted — use `init <preset>` to materialize a file. |
 | `--host <url>`             | `GITLAB_HOST`                  | | auto¹ | GitLab host without trailing `/` |
 | `--token <token>`          | `GITLAB_TOKEN`                 | ✓ | — | Personal Access Token (scope `read_api`) |
 | `--limit <n>`              | `PIPELINE_LIMIT`               | | `50` | Pipelines per group **after** client-side filters. If a group has `refPattern` / `excludeRef` / `excludeRefPattern`, the tool paginates (cap: 10×limit scanned) until exactly `n` matching pipelines are collected. |
 | `--status-filter <status>` | `JOB_STATUS_FILTER`            | | `success` | Job status filter (empty — no filter) |
 | `-h`, `--help`             | —                              | | | Show help |
 
-¹ Auto-detection via `CI_SERVER_URL` or `git remote`. If neither works, the flag becomes required.
+¹ Auto-detection via `CI_SERVER_URL` or `git remote`. If neither works, the flag becomes required.  
+² A config is required, but the path can come from `--config`, the env var, or — by default — `./gitlab-pipeline-stats.json` in the current directory. If none of these is available, the tool exits with an error.
 
-## Release-flow presets
+## Config file
 
-The starter set ships with four presets. Pick the one that matches your flow or use it as a template for your own.
+A config is **always a JSON file** (`--config` does **not** accept preset names anymore). The package bundles a few presets you can dump into a file with `init` and then commit / edit:
 
-### `gitflow` ([Vincent Driessen, 2010](https://nvie.com/posts/a-successful-git-branching-model/)) — default
+```sh
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json
+git add gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261                                   # picks ./gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261 --config ./ci/groups.json         # explicit path
+```
+
+Resolution order for the config (first match wins):
+
+1. `--config <path>`
+2. env `GITLAB_PIPELINE_STATS_CONFIG=<path>`
+3. `./gitlab-pipeline-stats.json` in the current working directory
+
+If none of these resolves to a file, the tool exits with an error and a hint about `init`.
+
+## Bundled presets
+
+Three starter presets ship with the package. Pick the one that matches your flow, dump it into a JSON file via `init`, then point `--config` at it (or commit it as `./gitlab-pipeline-stats.json` in the repo root).
+
+> **Note: `master` vs `main`.** All bundled presets assume the default branch is `main`. If your repository still uses the legacy `master`, after `init` open the generated `gitlab-pipeline-stats.json` and replace every `"main"` with `"master"` in `ref` / `excludeRef` / `label` fields. The tool itself does not know your default branch — the config is the source of truth.
+
+### `gitflow` ([Vincent Driessen, 2010](https://nvie.com/posts/a-successful-git-branching-model/))
 
 The "fullest" model: long-lived `main` and `develop`, short-lived `release/*`, `feature/*`, `hotfix/*`; releases are tagged. Suitable for complex products with a fixed release cadence and parallel support of several versions.
 
 ```sh
-gitlab-pipeline-stats 261                       # picks gitflow by default
-gitlab-pipeline-stats 261 --config gitflow
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261
 ```
 
 Groups: `main`, `develop`, `release/*`, `feature/*`, `hotfix/*`, `tags`.
@@ -111,7 +133,7 @@ Groups: `main`, `develop`, `release/*`, `feature/*`, `hotfix/*`, `tags`.
 Minimal model: a single `main`, everything else is short-lived feature branches; releases are tagged. Deploy usually happens after merging into `main`. Suits web apps and SaaS with CD.
 
 ```sh
-gitlab-pipeline-stats 261 --config github-flow
+gitlab-pipeline-stats init github-flow > gitlab-pipeline-stats.json
 ```
 
 Groups: `main`, `feature branches`, `tags`.
@@ -121,39 +143,20 @@ Groups: `main`, `feature branches`, `tags`.
 Even simpler: a single "trunk" (`main`) where any change lands fast (hours/days). Releases — via CD straight from `main`; tags are optional and not tracked here. Best for teams with feature flags and a mature CI/CD.
 
 ```sh
-gitlab-pipeline-stats 261 --config trunk
+gitlab-pipeline-stats init trunk > gitlab-pipeline-stats.json
 ```
 
 Groups: `main`, `short-lived branches`.
-
-### `tags-flow` (legacy default)
-
-Used by projects where the main branch is called `master` and releases are tags.
-
-```sh
-gitlab-pipeline-stats 261 --config tags-flow
-```
-
-Groups: `master`, `tags`, `branches != master`.
 
 ### Listing and viewing presets
 
 ```sh
 gitlab-pipeline-stats list-presets             # name + short description for each
 gitlab-pipeline-stats init gitflow             # prints JSON to stdout
-gitlab-pipeline-stats init gitflow > my.json   # redirect to a file and tweak
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # redirect to a file and tweak
 ```
 
-## Custom config
-
-A preset is just a JSON file. Copy any of them via `init` and tweak:
-
-```sh
-gitlab-pipeline-stats init github-flow > .gitlab-pipeline-stats.json
-gitlab-pipeline-stats 261 --config ./.gitlab-pipeline-stats.json
-```
-
-### Config schema
+## Config schema
 
 ```jsonc
 {
@@ -207,7 +210,7 @@ gitlab-pipeline-stats 261
 ```
 GitLab:      https://gitlab.example.com (from git remote)
 Project:     261 (from git remote)
-Config:      gitflow (/usr/local/lib/node_modules/gitlab-pipeline-stats/configs/gitflow.json)
+Config:      gitlab-pipeline-stats (from cwd: /repo/gitlab-pipeline-stats.json)
 Pipelines:   100 per group
 Job filter:  status=success
 
@@ -246,7 +249,7 @@ ____
 Быстрая статистика по последним N пайплайнам GitLab.  
 Считает по каждой джобе `count / avg / p50 / p95 / max` длительности выполнения.
 
-Пайплайны группируются по типу (например `main` / `develop` / `release/*` / `feature/*` / `tags`), для каждой группы выводится своя таблица. Группы задаются **пресетом** под твой release-flow или **собственным JSON-конфигом**.
+Пайплайны группируются по типу (например `main` / `develop` / `release/*` / `feature/*` / `tags`), для каждой группы выводится своя таблица. Группы задаются **JSON-файлом конфигурации**. В пакете есть набор **встроенных пресетов** (gitflow, github-flow, trunk) — выгрузи стартовый конфиг через `init` и правь его под свой репозиторий, держа его под контролем версий. Все пресеты исходят из имени основной ветки `main`; если у тебя по старинке `master` — см. [заметку ниже](#встроенные-пресеты).
 
 ## Установка
 
@@ -323,26 +326,48 @@ GITLAB_TOKEN=glpat-xxx gitlab-pipeline-stats
 
 | Флаг                       | Env                            | Обязательный | По умолчанию | Описание |
 |----------------------------|--------------------------------|:---:|---|---|
-| `--config <name\|path>`    | `GITLAB_PIPELINE_STATS_CONFIG` | | `gitflow` | Имя пресета или путь к JSON-конфигу групп |
+| `--config <path>`          | `GITLAB_PIPELINE_STATS_CONFIG` | ✓² | `./gitlab-pipeline-stats.json` | Путь к JSON-конфигу групп. Имена встроенных пресетов **не принимаются** — используй `init <preset>`, чтобы выгрузить пресет в файл. |
 | `--host <url>`             | `GITLAB_HOST`                  | | авто¹ | Хост GitLab без завершающего `/` |
 | `--token <token>`          | `GITLAB_TOKEN`                 | ✓ | — | Personal Access Token (scope `read_api`) |
 | `--limit <n>`              | `PIPELINE_LIMIT`               | | `50` | Число пайплайнов на группу **после** client-side фильтров. Если в группе есть `refPattern`/`excludeRef`/`excludeRefPattern`, инструмент дозапрашивает страницы (cap: 10×limit просканированных) пока не наберёт ровно `n` подходящих. |
 | `--status-filter <status>` | `JOB_STATUS_FILTER`            | | `success` | Фильтр статуса джобы (пусто — без фильтра) |
 | `-h`, `--help`             | —                              | | | Показать справку |
 
-¹ Авто-определение через `CI_SERVER_URL` или `git remote`. Если ни одно не сработало — флаг становится обязательным.
+¹ Авто-определение через `CI_SERVER_URL` или `git remote`. Если ни одно не сработало — флаг становится обязательным.  
+² Конфиг обязателен, но путь может прийти из `--config`, env-переменной или — по умолчанию — из `./gitlab-pipeline-stats.json` в текущей директории. Если ничего из этого недоступно, инструмент завершается с ошибкой.
 
-## Пресеты под release-flow
+## Файл конфигурации
 
-Сейчас в стартовом наборе четыре пресета. Выбираешь подходящий или используешь как шаблон для своего.
+Конфиг — это **всегда JSON-файл** (`--config` больше **не принимает** имена пресетов). В пакет встроены пресеты, которые можно выгрузить в файл через `init` и закоммитить / поправить:
 
-### `gitflow` ([Vincent Driessen, 2010](https://nvie.com/posts/a-successful-git-branching-model/)) — дефолт
+```sh
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json
+git add gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261                                   # подхватит ./gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261 --config ./ci/groups.json         # явный путь
+```
+
+Порядок резолва конфига (побеждает первое сработавшее):
+
+1. `--config <path>`
+2. env `GITLAB_PIPELINE_STATS_CONFIG=<path>`
+3. `./gitlab-pipeline-stats.json` в текущей директории
+
+Если ни один вариант не находит файл — выходим с ошибкой и подсказкой про `init`.
+
+## Встроенные пресеты
+
+В стартовом наборе три пресета. Выбираешь подходящий, выгружаешь в JSON через `init`, потом указываешь его в `--config` (либо коммитишь как `./gitlab-pipeline-stats.json` в корень репозитория).
+
+> **Note: `master` vs `main`.** Все встроенные пресеты исходят из того, что основная ветка называется `main`. Если в репозитории по старинке используется `master` — после `init` открой получившийся `gitlab-pipeline-stats.json` и замени все `"main"` на `"master"` в полях `ref` / `excludeRef` / `label`. Сам инструмент не знает имя дефолтной ветки твоего репозитория — источником правды является конфиг.
+
+### `gitflow` ([Vincent Driessen, 2010](https://nvie.com/posts/a-successful-git-branching-model/))
 
 Самая «полная» модель: долгоживущие `main` и `develop`, временные `release/*`, `feature/*`, `hotfix/*`, релизы оформляются тегами. Подходит для сложных продуктов с фиксированным циклом релизов и поддержкой нескольких версий одновременно.
 
 ```sh
-gitlab-pipeline-stats 261                       # подхватит gitflow по умолчанию
-gitlab-pipeline-stats 261 --config gitflow
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json
+gitlab-pipeline-stats 261
 ```
 
 Группы: `main`, `develop`, `release/*`, `feature/*`, `hotfix/*`, `tags`.
@@ -352,7 +377,7 @@ gitlab-pipeline-stats 261 --config gitflow
 Минималистичная модель: одна основная ветка `main`, всё остальное — короткоживущие feature-ветки, релизы оформляются тегами. Деплой обычно после мержа в `main`. Подходит для веб-приложений и SaaS с CD.
 
 ```sh
-gitlab-pipeline-stats 261 --config github-flow
+gitlab-pipeline-stats init github-flow > gitlab-pipeline-stats.json
 ```
 
 Группы: `main`, `feature branches`, `tags`.
@@ -362,39 +387,20 @@ gitlab-pipeline-stats 261 --config github-flow
 Ещё проще: единственный «trunk» (`main`), любые правки попадают в него быстро (часы/день). Релизы — через CD прямо из `main`, теги опциональны и здесь не учитываются. Подходит командам с feature-flag'ами и зрелым CI/CD.
 
 ```sh
-gitlab-pipeline-stats 261 --config trunk
+gitlab-pipeline-stats init trunk > gitlab-pipeline-stats.json
 ```
 
 Группы: `main`, `short-lived branches`.
-
-### `tags-flow` (легаси-дефолт)
-
-Используется в проектах, где основная ветка называется `master`, а релизы — это теги.
-
-```sh
-gitlab-pipeline-stats 261 --config tags-flow
-```
-
-Группы: `master`, `tags`, `branches != master`.
 
 ### Список и просмотр пресетов
 
 ```sh
 gitlab-pipeline-stats list-presets             # имя + краткое описание каждого
 gitlab-pipeline-stats init gitflow             # печатает JSON в stdout
-gitlab-pipeline-stats init gitflow > my.json   # перенаправить в файл и доработать
+gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # перенаправить в файл и доработать
 ```
 
-## Свой конфиг
-
-Пресет — это обычный JSON. Скопируй любой через `init` и правь под себя:
-
-```sh
-gitlab-pipeline-stats init github-flow > .gitlab-pipeline-stats.json
-gitlab-pipeline-stats 261 --config ./.gitlab-pipeline-stats.json
-```
-
-### Схема конфига
+## Схема конфига
 
 ```jsonc
 {
@@ -448,7 +454,7 @@ gitlab-pipeline-stats 261
 ```
 GitLab:      https://gitlab.example.com (from git remote)
 Project:     261 (from git remote)
-Config:      gitflow (/usr/local/lib/node_modules/gitlab-pipeline-stats/configs/gitflow.json)
+Config:      gitlab-pipeline-stats (from cwd: /repo/gitlab-pipeline-stats.json)
 Pipelines:   100 per group
 Job filter:  status=success
 

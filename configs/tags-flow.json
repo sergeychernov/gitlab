@@ -1,8 +1,0 @@
-{
-    "description": "Tags-flow: master + tags для релизов + прочие ветки (текущий легаси-дефолт)",
-    "groups": [
-        { "label": "master",              "ref": "master" },
-        { "label": "tags",                "scope": "tags" },
-        { "label": "branches != master",  "scope": "branches", "excludeRef": "master" }
-    ]
-}

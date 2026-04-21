@@ -1,5 +1,5 @@
 {
-    "description": "GitHub Flow: main + короткоживущие feature-ветки + tags для релизов",
+    "description": "GitHub Flow: main + short-lived feature branches + tags for releases",
     "groups": [
         { "label": "main",             "ref": "main" },
         { "label": "feature branches", "scope": "branches", "excludeRef": "main" },

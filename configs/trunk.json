@@ -1,5 +1,5 @@
 {
-    "description": "Trunk-based: один main + короткоживущие ветки, релизы через CD",
+    "description": "Trunk-based: a single main + short-lived branches, releases via CD",
     "groups": [
         { "label": "main",                 "ref": "main" },
         { "label": "short-lived branches", "scope": "branches", "excludeRef": "main" }

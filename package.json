@@ -1,6 +1,6 @@
 {
     "name": "gitlab-pipeline-stats",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "description": "Быстрая статистика по пайплайнам GitLab: avg, p50, p95, max по каждой джобе и группе. Группы настраиваются через пресеты для разных release-flow.",
     "type": "module",
     "bin": "./dist/gitlab-pipeline-stats.js",
