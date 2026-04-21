@@ -1,0 +1,8 @@
+{
+    "description": "GitHub Flow: main + короткоживущие feature-ветки + tags для релизов",
+    "groups": [
+        { "label": "main",             "ref": "main" },
+        { "label": "feature branches", "scope": "branches", "excludeRef": "main" },
+        { "label": "tags",             "scope": "tags" }
+    ]
+}

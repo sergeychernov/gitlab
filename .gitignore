@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+
+# Yarn (node_modules linker)
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/

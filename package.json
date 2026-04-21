@@ -1,0 +1,35 @@
+{
+    "name": "gitlab-pipeline-stats",
+    "version": "1.0.6",
+    "description": "Быстрая статистика по пайплайнам GitLab: avg, p50, p95, max по каждой джобе и группе. Группы настраиваются через пресеты для разных release-flow.",
+    "type": "module",
+    "bin": "./dist/gitlab-pipeline-stats.js",
+    "files": [
+        "dist/",
+        "configs/"
+    ],
+    "engines": {
+        "node": ">=24"
+    },
+    "packageManager": "yarn@4.13.0",
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "build": "tsc && node -e \"import('node:fs').then(fs => fs.chmodSync('dist/gitlab-pipeline-stats.js', 0o755))\"",
+        "prepublishOnly": "yarn build"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.0",
+        "typescript": "^5.7.0"
+    },
+    "keywords": [
+        "gitlab",
+        "pipeline",
+        "stats",
+        "ci",
+        "devops",
+        "gitflow",
+        "github-flow",
+        "trunk-based"
+    ],
+    "license": "MIT"
+}
