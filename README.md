@@ -41,7 +41,8 @@ After installation the binary is available as `yarn gitlab-pipeline-stats …` o
 ```
 Run with: `yarn pipeline-stats` (or `npm run pipeline-stats`).
 
-Requires **Node.js ≥ 24** — the package is written in TypeScript and runs via Node's native type stripping. No runtime dependencies.
+Requires **Node.js ≥ 20** to run the published npm package (`dist/*.js`).  
+Running TypeScript sources directly (`node bin/gitlab-pipeline-stats.ts`) requires **Node.js 24+** (native type stripping). No runtime dependencies.
 
 ## Usage
 
@@ -242,6 +243,7 @@ node bin/gitlab-pipeline-stats.ts <PROJECT_ID>    # run from sources (Node 24+)
 yarn build                                         # build into dist/ (for publishing)
 ```
 
+For users installing from npm, **Node.js >= 20** is sufficient because the package runs from compiled `dist/*.js`.  
 Node.js 24+ can run `.ts` files from regular directories directly (type stripping). However, type stripping **does not work for files inside `node_modules`** ([spec](https://nodejs.org/api/typescript.html#type-stripping-in-dependencies)), so the package is published already compiled into `dist/*.js`. The build runs automatically before `npm publish` via the `prepublishOnly` hook.
 
 ## License
@@ -291,7 +293,8 @@ yarn add -D gitlab-pipeline-stats
 ```
 Запуск: `yarn pipeline-stats` (или `npm run pipeline-stats`).
 
-Требует **Node.js ≥ 24** — пакет написан на TypeScript и запускается напрямую через нативный type-stripping Node.js. Внешних рантайм-зависимостей нет.
+Для запуска опубликованного npm-пакета (`dist/*.js`) нужен **Node.js ≥ 20**.  
+Для прямого запуска TypeScript-исходников (`node bin/gitlab-pipeline-stats.ts`) нужен **Node.js 24+** (нативный type stripping). Внешних рантайм-зависимостей нет.
 
 ## Использование
 
@@ -492,6 +495,7 @@ node bin/gitlab-pipeline-stats.ts <PROJECT_ID>    # запуск из исход
 yarn build                                         # сборка в dist/ (для публикации)
 ```
 
+Для пользователей npm-пакета достаточно **Node.js >= 20**, так как выполняется скомпилированный `dist/*.js`.  
 Node.js 24+ умеет запускать `.ts`-файлы из обычных каталогов напрямую (type stripping). Однако type stripping **не работает для файлов внутри `node_modules`** ([спецификация](https://nodejs.org/api/typescript.html#type-stripping-in-dependencies)), поэтому пакет публикуется уже скомпилированным в `dist/*.js`. Сборка запускается автоматически перед `npm publish` через хук `prepublishOnly`.
 
 ## Лицензия

@@ -1,7 +1,7 @@
 {
     "name": "gitlab-pipeline-stats",
-    "version": "1.0.8",
-    "description": "Быстрая статистика по пайплайнам GitLab: avg, p50, p95, max по каждой джобе и группе. Группы настраиваются через пресеты для разных release-flow.",
+    "version": "1.0.10",
+    "description": "Quick GitLab pipeline stats: avg, p50, p95, and max per job and group. Groups are configured via presets for different release flows.",
     "type": "module",
     "bin": "./dist/gitlab-pipeline-stats.js",
     "files": [
@@ -9,7 +9,7 @@
         "configs/"
     ],
     "engines": {
-        "node": ">=24"
+        "node": ">=20"
     },
     "packageManager": "yarn@4.13.0",
     "scripts": {
