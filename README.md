@@ -41,7 +41,7 @@ After installation the binary is available as `yarn gitlab-pipeline-stats …` o
 ```
 Run with: `yarn pipeline-stats` (or `npm run pipeline-stats`).
 
-Requires **Node.js ≥ 20** to run the published npm package (`dist/*.js`).  
+Requires **Node.js ≥ 20.11.0** to run the published npm package (`dist/*.js`).  
 Running TypeScript sources directly (`node bin/gitlab-pipeline-stats.ts`) requires **Node.js 24+** (native type stripping). No runtime dependencies.
 
 ## Usage
@@ -94,6 +94,12 @@ Each option can be set in three ways (in decreasing priority):
 | `--token <token>`          | `GITLAB_TOKEN`                 | ✓ | — | Personal Access Token (scope `read_api`) |
 | `--limit <n>`              | `PIPELINE_LIMIT`               | | `50` | Pipelines per group **after** client-side filters. If a group has `refPattern` / `excludeRef` / `excludeRefPattern`, the tool paginates (cap: 10×limit scanned) until exactly `n` matching pipelines are collected. |
 | `--status-filter <status>` | `JOB_STATUS_FILTER`            | | `success` | Job status filter (empty — no filter) |
+| `--section`                | —                              | | off | Drill into GitLab CI [section markers](#drill-into-job-sections) inside each job log |
+| `--section-filter <regex>` | —                              | | — | Show only sections whose name matches the regex |
+| `--section-job-filter <regex>` | —                          | | — | Limit drill-down to jobs whose name matches the regex (perf) |
+| `--section-order <mode>`   | —                              | | `appearance` | Section row sort: `appearance` \| `p50` \| `name` |
+| `--section-builtins`       | —                              | | off | Also show built-in sections emitted around your code by the toolchain — gitlab-runner stages (`step_script`, `get_sources`, `upload_artifacts_on_success`, …) and Yarn Berry (`resolution_step`, `fetch_step`, `link_step`, `_tmp_xfs_<hex>_build_log`, …). OFF by default — only user sections from your `script:` are shown. |
+| `--warnings`               | —                              | | off | Print non-fatal warnings to stderr (failed trace fetches, unclosed section markers, etc.). OFF by default — output stays clean. |
 | `-h`, `--help`             | —                              | | | Show help |
 
 ¹ Auto-detection via `CI_SERVER_URL` or `git remote`. If neither works, the flag becomes required.  
@@ -212,6 +218,76 @@ cp .env.example .env
 gitlab-pipeline-stats 261
 ```
 
+## Drill into job sections
+
+GitLab CI supports collapsible sections in job logs via ANSI markers. If your team instruments `before_script`/`script` with these markers (typically via a small `section()` bash helper, [example below](#instrumenting-jobs-with-sections)), the marker boundaries also encode start/end Unix timestamps — i.e. each section comes with its own duration. `gitlab-pipeline-stats --section` parses those markers from job traces and prints per-section breakdown under each job row.
+
+```sh
+gitlab-pipeline-stats --section
+gitlab-pipeline-stats --section --section-filter '^build|^deploy'
+gitlab-pipeline-stats --section --section-job-filter '^(build|deploy-)'
+```
+
+Default behaviour is unchanged: **without** `--section` the tool makes zero `/trace` requests and produces exactly the same output as before. With `--section` enabled it additionally fetches `/projects/:id/jobs/:job_id/trace` for each job that passed the status filter (and matches `--section-job-filter`, if set), parses section markers and renders them indented under the job row in the order they first appeared in the build flow:
+
+```
+=== main ===
+JOB                                                    N   avg(s)  p50(s)  p95(s)  max(s)
+build                                                 33      401     406     490     570
+  ├─ ssh_keys                                         33        2       2       3       5
+  ├─ check_deps                                       33        4       4       6      10
+  ├─ submodules                                       33        8       7      12      20
+  ├─ install                                          33       38      36      62      90
+  ├─ test                                             33       71      70     110     150
+  ├─ gatsby_build                                     33      198     195     270     320
+  └─ pdf_buffers                                      33       11      11      18      22
+deploy-cdn                                            27      275     257     404     420
+  ├─ helm_setup                                       27       15      14      22      30
+  └─ upload                                           27      255     240     380     400
+TOTAL pipeline (wall)                                 50      724     719     969    1082
+Sections found in 60/60 jobs
+```
+
+Notes:
+
+- The same `read_api` token scope is sufficient — no extra permissions needed.
+- Sections are aggregated per `(job_name, section_name)`. If the same section repeats inside a single job run, durations are summed before being added to the sample.
+- For `--section-order appearance` (the default) sections of a job are displayed in the order their first start marker appeared in the first scanned trace; sections that appear only in later pipelines are appended at the end.
+- Built-in sections that the toolchain wraps around your code are **hidden by default** — usually only your own sections from `script:` are interesting. Hidden out of the box are: gitlab-runner stages (`step_script`, `get_sources`, `upload_artifacts_on_success`, etc.) and Yarn Berry sections (`resolution_step`, `fetch_step`, `link_step`, `_tmp_xfs_<hex>_build_log`, etc.). Pass `--section-builtins` to also include them in the breakdown.
+- If a job was killed mid-section (start without a matching end), the orphan is silently dropped. Pass `--warnings` to surface such cases (and other non-fatal issues like failed `/trace` fetches) on stderr.
+- GitLab can truncate traces (default 4 MB), but section markers are short and almost always survive truncation.
+- Performance: with `--limit 50` and ~7 jobs per pipeline that's ~350 trace GETs per group. Requests run in parallel with a fixed concurrency of 8 — tight enough not to hammer the API, while still finishing fast. Tighten the scan with `--section-job-filter` if you only care about a couple of heavy jobs.
+- If `--section` is on but no markers are found, the tool prints the regular job table plus a hint like `Sections found in 0/27 jobs (no instrumentation?)`.
+
+### Instrumenting jobs with sections
+
+To make `--section` useful you need to wrap the interesting steps in your `before_script`/`script` with section markers. The package ships a ready-made bash helper at [`share/section.sh`](./share/section.sh), so you don't have to copy-paste it into every repo.
+
+**If `gitlab-pipeline-stats` is already a `devDependency` of your project**, just `source` it from `node_modules` — no extra download step:
+
+```yaml
+build:
+  before_script:
+    - source node_modules/gitlab-pipeline-stats/share/section.sh
+  script:
+    - section install      yarn install --frozen-lockfile
+    - section test         yarn test
+    - section gatsby_build yarn build
+```
+
+**If the job runs without `node_modules` available** (e.g. a build-image without npm), grab the file directly from the published tarball or from the repo:
+
+```yaml
+build:
+  before_script:
+    - curl -fsSL https://raw.githubusercontent.com/sergeychernov/gitlab/master/share/section.sh -o /tmp/section.sh
+    - source /tmp/section.sh
+  script:
+    - section install yarn install --frozen-lockfile
+```
+
+`section <name> <cmd...>` runs `<cmd...>`, prints `section_start` / `section_end` ANSI markers around it, and returns the wrapped command's exit code (so `set -e` keeps working). Section names must match `[^\[\]\r\n]+` (everything except `[`, `]`, newlines) — keep them short, regex-friendly identifiers (`snake_case` plays well with `--section-filter`).
+
 ## Sample output
 
 ```
@@ -239,11 +315,12 @@ TOTAL pipeline (wall)                                      100       891      68
 ```sh
 yarn install
 yarn typecheck                                     # tsc --noEmit, strict mode
+yarn test                                          # node:test on bin/sections.ts (Node 24+)
 node bin/gitlab-pipeline-stats.ts <PROJECT_ID>    # run from sources (Node 24+)
 yarn build                                         # build into dist/ (for publishing)
 ```
 
-For users installing from npm, **Node.js >= 20** is sufficient because the package runs from compiled `dist/*.js`.  
+For users installing from npm, **Node.js >= 20.11.0** is sufficient because the package runs from compiled `dist/*.js`.  
 Node.js 24+ can run `.ts` files from regular directories directly (type stripping). However, type stripping **does not work for files inside `node_modules`** ([spec](https://nodejs.org/api/typescript.html#type-stripping-in-dependencies)), so the package is published already compiled into `dist/*.js`. The build runs automatically before `npm publish` via the `prepublishOnly` hook.
 
 ## License
@@ -293,7 +370,7 @@ yarn add -D gitlab-pipeline-stats
 ```
 Запуск: `yarn pipeline-stats` (или `npm run pipeline-stats`).
 
-Для запуска опубликованного npm-пакета (`dist/*.js`) нужен **Node.js ≥ 20**.  
+Для запуска опубликованного npm-пакета (`dist/*.js`) нужен **Node.js ≥ 20.11.0**.  
 Для прямого запуска TypeScript-исходников (`node bin/gitlab-pipeline-stats.ts`) нужен **Node.js 24+** (нативный type stripping). Внешних рантайм-зависимостей нет.
 
 ## Использование
@@ -346,6 +423,12 @@ GITLAB_TOKEN=glpat-xxx gitlab-pipeline-stats
 | `--token <token>`          | `GITLAB_TOKEN`                 | ✓ | — | Personal Access Token (scope `read_api`) |
 | `--limit <n>`              | `PIPELINE_LIMIT`               | | `50` | Число пайплайнов на группу **после** client-side фильтров. Если в группе есть `refPattern`/`excludeRef`/`excludeRefPattern`, инструмент дозапрашивает страницы (cap: 10×limit просканированных) пока не наберёт ровно `n` подходящих. |
 | `--status-filter <status>` | `JOB_STATUS_FILTER`            | | `success` | Фильтр статуса джобы (пусто — без фильтра) |
+| `--section`                | —                              | | off | Дрилл-даун по [section-маркерам](#детализация-по-section-маркерам) GitLab CI внутри лога каждой джобы |
+| `--section-filter <regex>` | —                              | | — | Показать только секции с именем, подходящим под regex |
+| `--section-job-filter <regex>` | —                          | | — | Загружать trace только у джоб, чьи имена подходят под regex (perf) |
+| `--section-order <mode>`   | —                              | | `appearance` | Сортировка строк секций: `appearance` \| `p50` \| `name` |
+| `--section-builtins`       | —                              | | off | Показывать в выводе встроенные секции, которыми тулчейн оборачивает твой код: stages gitlab-runner (`step_script`, `get_sources`, `upload_artifacts_on_success`, …) и Yarn Berry (`resolution_step`, `fetch_step`, `link_step`, `_tmp_xfs_<hex>_build_log`, …). По умолчанию выключено — выводятся только user-секции из твоего `script:`. |
+| `--warnings`               | —                              | | off | Печатать в stderr нефатальные предупреждения (не удалось скачать trace, незакрытые section-маркеры и т.п.). По умолчанию выключено, чтобы не зашумлять вывод. |
 | `-h`, `--help`             | —                              | | | Показать справку |
 
 ¹ Авто-определение через `CI_SERVER_URL` или `git remote`. Если ни одно не сработало — флаг становится обязательным.  
@@ -464,6 +547,76 @@ cp .env.example .env
 gitlab-pipeline-stats 261
 ```
 
+## Детализация по section-маркерам
+
+GitLab CI поддерживает collapsible-секции в логах джоб через ANSI-маркеры. Если в твоём `before_script`/`script` секции уже размечены (обычно небольшим bash-хелпером `section()`, [пример ниже](#разметка-джоб-через-section-helper)), то границы маркеров одновременно несут Unix-таймштампы старта и конца — то есть у каждой секции есть собственная длительность. Флаг `gitlab-pipeline-stats --section` парсит эти маркеры из job trace и печатает разбивку по секциям отступом под строкой джобы.
+
+```sh
+gitlab-pipeline-stats --section
+gitlab-pipeline-stats --section --section-filter '^build|^deploy'
+gitlab-pipeline-stats --section --section-job-filter '^(build|deploy-)'
+```
+
+Поведение по умолчанию не меняется: **без** `--section` инструмент не делает ни одного запроса `/trace` и выдаёт ровно тот же вывод, что и раньше. С `--section` он дополнительно тянет `/projects/:id/jobs/:job_id/trace` для каждой джобы, прошедшей фильтр статуса (и `--section-job-filter`, если задан), парсит маркеры и рендерит секции под строкой джобы — в том порядке, в котором они впервые встречаются в build flow:
+
+```
+=== main ===
+JOB                                                    N   avg(s)  p50(s)  p95(s)  max(s)
+build                                                 33      401     406     490     570
+  ├─ ssh_keys                                         33        2       2       3       5
+  ├─ check_deps                                       33        4       4       6      10
+  ├─ submodules                                       33        8       7      12      20
+  ├─ install                                          33       38      36      62      90
+  ├─ test                                             33       71      70     110     150
+  ├─ gatsby_build                                     33      198     195     270     320
+  └─ pdf_buffers                                      33       11      11      18      22
+deploy-cdn                                            27      275     257     404     420
+  ├─ helm_setup                                       27       15      14      22      30
+  └─ upload                                           27      255     240     380     400
+TOTAL pipeline (wall)                                 50      724     719     969    1082
+Sections found in 60/60 jobs
+```
+
+Что важно знать:
+
+- Достаточно того же скоупа токена `read_api` — никаких дополнительных прав не нужно.
+- Секции агрегируются по ключу `(job_name, section_name)`. Если одна и та же секция повторяется внутри одной джобы — её длительности суммируются перед добавлением в сэмпл.
+- При `--section-order appearance` (дефолт) секции внутри джобы выводятся в порядке появления первых start-маркеров в первом просканированном trace; секции, которые встретились только в более поздних пайплайнах, дописываются в конец.
+- Встроенные секции, которыми тулчейн оборачивает твой код, **по умолчанию скрыты** — обычно интересны только твои собственные секции из `script:`. Из коробки прячутся: stages gitlab-runner (`step_script`, `get_sources`, `upload_artifacts_on_success` и т.д.) и секции Yarn Berry (`resolution_step`, `fetch_step`, `link_step`, `_tmp_xfs_<hex>_build_log` и т.д.). Чтобы вывести и их, добавь `--section-builtins`.
+- Если джоба была прибита посреди секции (start без парного end) — orphan-секция тихо игнорируется. Чтобы такие случаи (а также прочие нефатальные проблемы — например, не удалось скачать `/trace`) показывались в stderr, добавь флаг `--warnings`.
+- GitLab может обрезать trace (по умолчанию 4 МБ), но section-маркеры короткие и почти всегда выживают.
+- Производительность: при `--limit 50` и ~7 джоб на пайплайн получается ~350 trace-GET'ов на группу. Запросы идут параллельно с фиксированной concurrency 8 — этого хватает, чтобы быстро отработать, и при этом не «забомбить» API. Сужай область через `--section-job-filter`, если интересны только пара тяжёлых джоб.
+- Если `--section` включён, но маркеров нигде не нашлось, после таблицы появится подсказка вроде `Sections found in 0/27 jobs (no instrumentation?)`.
+
+### Разметка джоб через `section()` helper
+
+Чтобы `--section` начал давать пользу, нужно обернуть интересующие шаги в `before_script`/`script` маркерами секций. Готовый bash-хелпер уже едет внутри пакета — [`share/section.sh`](./share/section.sh), копировать его в каждый репозиторий не нужно.
+
+**Если `gitlab-pipeline-stats` уже стоит как `devDependency`** в проекте, просто `source`-ни файл из `node_modules` — никаких дополнительных шагов:
+
+```yaml
+build:
+  before_script:
+    - source node_modules/gitlab-pipeline-stats/share/section.sh
+  script:
+    - section install      yarn install --frozen-lockfile
+    - section test         yarn test
+    - section gatsby_build yarn build
+```
+
+**Если в job нет `node_modules`** (например, build-образ без npm), скачай файл напрямую из репозитория:
+
+```yaml
+build:
+  before_script:
+    - curl -fsSL https://raw.githubusercontent.com/sergeychernov/gitlab/master/share/section.sh -o /tmp/section.sh
+    - source /tmp/section.sh
+  script:
+    - section install yarn install --frozen-lockfile
+```
+
+`section <name> <cmd...>` выполняет `<cmd...>`, оборачивает его ANSI-маркерами `section_start` / `section_end` и возвращает rc обёрнутой команды (так что `set -e` продолжает работать). Имена секций должны попадать под `[^\[\]\r\n]+` (всё, кроме `[`, `]`, переводов строки) — выбирай короткие regex-friendly идентификаторы (`snake_case` хорошо дружит с `--section-filter`).
+
 ## Пример вывода
 
 ```
@@ -491,11 +644,12 @@ TOTAL pipeline (wall)                                      100       891      68
 ```sh
 yarn install
 yarn typecheck                                     # tsc --noEmit, strict-режим
+yarn test                                          # node:test для bin/sections.ts (Node 24+)
 node bin/gitlab-pipeline-stats.ts <PROJECT_ID>    # запуск из исходников (Node 24+)
 yarn build                                         # сборка в dist/ (для публикации)
 ```
 
-Для пользователей npm-пакета достаточно **Node.js >= 20**, так как выполняется скомпилированный `dist/*.js`.  
+Для пользователей npm-пакета достаточно **Node.js >= 20.11.0**, так как выполняется скомпилированный `dist/*.js`.  
 Node.js 24+ умеет запускать `.ts`-файлы из обычных каталогов напрямую (type stripping). Однако type stripping **не работает для файлов внутри `node_modules`** ([спецификация](https://nodejs.org/api/typescript.html#type-stripping-in-dependencies)), поэтому пакет публикуется уже скомпилированным в `dist/*.js`. Сборка запускается автоматически перед `npm publish` через хук `prepublishOnly`.
 
 ## Лицензия

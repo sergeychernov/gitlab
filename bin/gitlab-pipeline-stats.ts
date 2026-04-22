@@ -7,6 +7,8 @@ import * as fs       from 'node:fs';
 import { parseArgs } from 'node:util';
 import { execSync }  from 'node:child_process';
 
+import { parseTraceSections } from './sections.ts';
+
 // --- Типы -------------------------------------------------------------------
 
 interface GitLabPipeline {
@@ -16,6 +18,7 @@ interface GitLabPipeline {
 }
 
 interface GitLabJob {
+    id: number;
     name: string;
     status: string;
     duration: number | null;
@@ -34,6 +37,18 @@ interface JobStats {
 }
 
 type StatsMap = Record<string, JobStats>;
+
+// Section breakdown по конкретному job_name: статы по каждой секции
+// и порядок их появления (берётся из первого встретившегося trace
+// и расширяется по мере появления новых секций в следующих trace'ах).
+interface SectionBreakdown {
+    stats: StatsMap;
+    order: string[];
+}
+
+type SectionsMap = Record<string, SectionBreakdown>;
+
+type SectionOrderMode = 'appearance' | 'p50' | 'name';
 
 interface RenderRow {
     name: string;
@@ -78,6 +93,70 @@ interface Config {
     configPath:      string;   // абсолютный путь до загруженного JSON
     configSource:    ConfigSource;
     groups:          GroupSpec[];
+
+    // Section drill-down (флаг --section). Без него ничего из этого не используется
+    // и /trace эндпоинт не запрашивается.
+    section:             boolean;
+    sectionFilterRe?:    RegExp;
+    sectionJobFilterRe?: RegExp;
+    sectionOrder:        SectionOrderMode;
+    // Показывать ли built-in секции gitlab-runner (step_script, get_sources,
+    // upload_artifacts_on_success и т.п.). По умолчанию false — чаще всего
+    // интересны только user-секции из script:.
+    sectionBuiltins:     boolean;
+
+    // Печатать ли в stderr предупреждения (failed trace fetch, orphan sections и т.п.).
+    // По умолчанию выключено, чтобы не зашумлять вывод.
+    warnings:            boolean;
+}
+
+// Параллелизм запросов /trace. Не выставляется через CLI — простой константой,
+// которой комфортно для GitLab API: 8 одновременных GET-ов балансируют время
+// сбора и нагрузку на сервер.
+const SECTION_CONCURRENCY = 8;
+
+// «Встроенные» секции, которые эмитят инструменты вокруг кода пользователя
+// (gitlab-runner вокруг каждого этапа джобы, Yarn Berry внутри `yarn install`,
+// и т.п.). По умолчанию они скрыты — обычно интересны только user-секции из
+// твоего script:. Включаются обратно через --section-builtins.
+const BUILTIN_SECTION_NAMES: ReadonlySet<string> = new Set([
+    // gitlab-runner: stages вокруг исполнения джобы + варианты для
+    // cache/artifacts при failure (см. runner source).
+    'resolve_secrets',
+    'prepare_executor',
+    'prepare_script',
+    'get_sources',
+    'restore_cache',
+    'download_artifacts',
+    'step_script',
+    'after_script',
+    'archive_cache',
+    'archive_cache_on_failure',
+    'upload_artifacts_on_success',
+    'upload_artifacts_on_failure',
+    'cleanup_file_variables',
+    // Yarn Berry (2+/3+/4+) внутри `yarn install`.
+    'resolution_step',
+    'post_resolution_validation',
+    'fetch_step',
+    'link_step',
+]);
+
+// Регэкспы для имён, у которых не фиксированный текст, а pattern. Сюда
+// относятся, например, per-package build-логи Yarn Berry: для каждого пакета
+// с postinstall Yarn эмитит секцию с именем `_tmp_xfs_<hex>_build_log`,
+// которая фактически указывает на /tmp/xfs-<hash>/build.log. Это тоже
+// служебный шум, прячется тем же --section-builtins.
+const BUILTIN_SECTION_PATTERNS: readonly RegExp[] = [
+    /^_tmp_xfs_[0-9a-f]+_build_log$/,
+];
+
+function isBuiltinSection(name: string): boolean {
+    if (BUILTIN_SECTION_NAMES.has(name)) return true;
+    for (const re of BUILTIN_SECTION_PATTERNS) {
+        if (re.test(name)) return true;
+    }
+    return false;
 }
 
 // --- .env parser (без зависимостей) ----------------------------------------
@@ -276,6 +355,25 @@ Options (override env / .env):
   --token <token>            Personal Access Token (scope read_api)         [env: GITLAB_TOKEN]
   --limit <n>                Pipelines per group (max 100)                  [env: PIPELINE_LIMIT, default: 50]
   --status-filter <status>   Job status filter (empty — no filter)          [env: JOB_STATUS_FILTER, default: success]
+
+  --section                  Drill into GitLab CI section markers in job logs.
+                             Adds an indented breakdown under each job row in the
+                             order sections first appear in the build flow.
+                             OFF by default — no extra /trace requests are made.
+  --section-filter <regex>   Show only sections whose name matches the regex
+  --section-job-filter <regex>
+                             Limit drill-down to jobs whose name matches the regex
+                             (perf: avoids fetching traces for irrelevant jobs)
+  --section-order <mode>     Section row sort: appearance | p50 | name             [default: appearance]
+  --section-builtins         Also show built-in runner sections (step_script,
+                             get_sources, upload_artifacts_on_success, etc.).
+                             OFF by default — only user sections from your
+                             script: are shown.
+
+  --warnings                 Print non-fatal warnings to stderr (failed trace
+                             fetches, unclosed section markers, etc.).
+                             OFF by default — output stays clean.
+
   -h, --help                 Show help
 
 Examples:
@@ -283,6 +381,9 @@ Examples:
   gitlab-pipeline-stats                                    # auto-detect PROJECT_ID + ./${DEFAULT_CONFIG_FILENAME}
   gitlab-pipeline-stats 261 --config ./${DEFAULT_CONFIG_FILENAME}
   gitlab-pipeline-stats 261 --config ./ci/groups.json
+  gitlab-pipeline-stats 261 --section
+  gitlab-pipeline-stats 261 --section --section-filter '^build|^deploy'
+  gitlab-pipeline-stats 261 --section --section-job-filter '^(build|deploy-)'
 `;
 
 // Кэш origin-URL: git remote вызывается один раз для host- и project-детекта.
@@ -378,12 +479,18 @@ function parseCli(): Config {
             args: process.argv.slice(2),
             allowPositionals: true,
             options: {
-                config:          { type: 'string' },
-                host:            { type: 'string' },
-                token:           { type: 'string' },
-                limit:           { type: 'string' },
-                'status-filter': { type: 'string' },
-                help:            { type: 'boolean', short: 'h' },
+                config:                { type: 'string' },
+                host:                  { type: 'string' },
+                token:                 { type: 'string' },
+                limit:                 { type: 'string' },
+                'status-filter':       { type: 'string' },
+                section:               { type: 'boolean' },
+                'section-filter':      { type: 'string' },
+                'section-job-filter':  { type: 'string' },
+                'section-order':       { type: 'string' },
+                'section-builtins':    { type: 'boolean' },
+                warnings:              { type: 'boolean' },
+                help:                  { type: 'boolean', short: 'h' },
             },
         });
     } catch (e) {
@@ -502,7 +609,31 @@ function parseCli(): Config {
         process.exit(1);
     }
 
-    return {
+    // --- Section drill-down
+    const section = values.section === true;
+
+    const compileRegex = (input: string | undefined, flag: string): RegExp | undefined => {
+        if (!input) return undefined;
+        try {
+            return new RegExp(input);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            err(`Invalid regex for ${flag}: ${msg}\n`);
+            process.exit(1);
+        }
+    };
+
+    const sectionFilterRe    = compileRegex(values['section-filter'],     '--section-filter');
+    const sectionJobFilterRe = compileRegex(values['section-job-filter'], '--section-job-filter');
+
+    const sectionOrderRaw = values['section-order'] ?? 'appearance';
+    if (sectionOrderRaw !== 'appearance' && sectionOrderRaw !== 'p50' && sectionOrderRaw !== 'name') {
+        err(`--section-order must be one of: appearance | p50 | name (got: ${sectionOrderRaw})\n`);
+        process.exit(1);
+    }
+    const sectionOrder = sectionOrderRaw as SectionOrderMode;
+
+    const result: Config = {
         projectId,
         projectIdSource,
         host,
@@ -514,7 +645,14 @@ function parseCli(): Config {
         configPath,
         configSource,
         groups,
+        section,
+        sectionOrder,
+        sectionBuiltins: values['section-builtins'] === true,
+        warnings:        values.warnings === true,
     };
+    if (sectionFilterRe)    result.sectionFilterRe    = sectionFilterRe;
+    if (sectionJobFilterRe) result.sectionJobFilterRe = sectionJobFilterRe;
+    return result;
 }
 
 // --- Subcommand routing -----------------------------------------------------
@@ -541,6 +679,15 @@ out(`${DIM}Project:${CR}     ${cfg.projectId} ${DIM}(from ${cfg.projectIdSource}
 out(`${DIM}Config:${CR}      ${cfg.configName} ${DIM}(from ${cfg.configSource}: ${cfg.configPath})${CR}\n`);
 out(`${DIM}Pipelines:${CR}   ${cfg.limit} per group\n`);
 out(`${DIM}Job filter:${CR}  status=${cfg.statusFilter || '<any>'}\n`);
+if (cfg.section) {
+    const sf  = cfg.sectionFilterRe    ? cfg.sectionFilterRe.source    : '<all>';
+    const sjf = cfg.sectionJobFilterRe ? cfg.sectionJobFilterRe.source : '<all>';
+    out(
+        `${DIM}Sections:${CR}    on ` +
+        `${DIM}(filter=${sf}, job-filter=${sjf}, order=${cfg.sectionOrder}, ` +
+        `builtins=${cfg.sectionBuiltins ? 'on' : 'off'})${CR}\n`
+    );
+}
 
 // --- HTTP -------------------------------------------------------------------
 
@@ -548,6 +695,33 @@ async function get<T>(url: string): Promise<T> {
     const res = await fetch(url, { headers: HEADERS });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
     return res.json() as Promise<T>;
+}
+
+async function getText(url: string): Promise<string> {
+    const res = await fetch(url, { headers: HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
+    return res.text();
+}
+
+// Простой пул задач с фиксированной concurrency: сохраняет порядок результатов
+// по индексу, чтобы вызывающий код мог соотнести вход с выходом.
+async function pool<T, R>(
+    items: readonly T[],
+    concurrency: number,
+    worker: (item: T, idx: number) => Promise<R>,
+): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let nextIdx = 0;
+    const run = async (): Promise<void> => {
+        for (;;) {
+            const idx = nextIdx++;
+            if (idx >= items.length) return;
+            results[idx] = await worker(items[idx]!, idx);
+        }
+    };
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    await Promise.all(Array.from({ length: workerCount }, () => run()));
+    return results;
 }
 
 // --- Статистика -------------------------------------------------------------
@@ -639,8 +813,19 @@ async function fetchPipelinesForGroup(spec: GroupSpec): Promise<number[]> {
 
 const TOTAL_KEY = 'TOTAL' as const;
 
-async function collect(ids: readonly number[]): Promise<StatsMap> {
-    const stats: StatsMap = {};
+interface CollectResult {
+    stats:           StatsMap;
+    sections:        SectionsMap;
+    jobsScanned:     number; // сколько джоб было просканировано на маркеры
+    jobsWithMarkers: number; // в скольких из них реально нашли секции
+}
+
+async function collect(ids: readonly number[]): Promise<CollectResult> {
+    const stats:    StatsMap    = {};
+    const sections: SectionsMap = {};
+    let jobsScanned     = 0;
+    let jobsWithMarkers = 0;
+
     for (let i = 0; i < ids.length; i++) {
         const pid = ids[i];
         err(`\r  pipeline ${i + 1}/${ids.length} (id=${pid})        `);
@@ -651,14 +836,78 @@ async function collect(ids: readonly number[]): Promise<StatsMap> {
         }
 
         const jobs = await get<GitLabJob[]>(`${API}/projects/${cfg.projectId}/pipelines/${pid}/jobs?per_page=100`);
+
+        // Шаг 1: фильтруем джобы по статусу и считаем job-level статы (как раньше).
+        const counted: GitLabJob[] = [];
         for (const job of jobs) {
             if (cfg.statusFilter && job.status !== cfg.statusFilter) continue;
             if (job.duration == null) continue;
             addStat(stats, job.name, job.duration);
+            counted.push(job);
+        }
+
+        // Шаг 2: section drill-down. Только если флаг включён —
+        // никаких лишних запросов в дефолтном режиме.
+        if (!cfg.section) continue;
+
+        const traceJobs = counted.filter(
+            (j) => !cfg.sectionJobFilterRe || cfg.sectionJobFilterRe.test(j.name)
+        );
+        jobsScanned += traceJobs.length;
+
+        const traces = await pool(traceJobs, SECTION_CONCURRENCY, async (job) => {
+            try {
+                const trace = await getText(
+                    `${API}/projects/${cfg.projectId}/jobs/${job.id}/trace`
+                );
+                return { job, parsed: parseTraceSections(trace) };
+            } catch (e) {
+                if (cfg.warnings) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    err(`\nWarning: failed to fetch trace for job ${job.id} (${job.name}): ${msg}\n`);
+                }
+                return null;
+            }
+        });
+
+        for (const item of traces) {
+            if (!item) continue;
+            const { job, parsed } = item;
+            if (cfg.warnings && parsed.orphanNames.length > 0) {
+                err(
+                    `\nWarning: job ${job.id} (${job.name}) — dropped ${parsed.orphanNames.length} ` +
+                    `unclosed section(s): ${parsed.orphanNames.join(', ')} ` +
+                    `(truncated trace, killed mid-section, or non-canonical markers)\n`
+                );
+            }
+            if (parsed.durations.size === 0) continue;
+            jobsWithMarkers++;
+
+            let breakdown = sections[job.name];
+            if (!breakdown) {
+                breakdown = { stats: {}, order: [] };
+                sections[job.name] = breakdown;
+            }
+
+            // Расширяем порядок появлений: новые секции из этого trace
+            // дописываются в конец, сохраняя порядок самого первого пайплайна.
+            const known = new Set(breakdown.order);
+            for (const name of parsed.order) {
+                if (!known.has(name)) {
+                    breakdown.order.push(name);
+                    known.add(name);
+                }
+            }
+
+            // Добавляем сэмплы в статы (одна запись на джобу — суммарная
+            // длительность всех вхождений секции в её trace).
+            for (const [name, dur] of parsed.durations) {
+                addStat(breakdown.stats, name, dur);
+            }
         }
     }
     err(`\r${' '.repeat(60)}\r`);
-    return stats;
+    return { stats, sections, jobsScanned, jobsWithMarkers };
 }
 
 // --- Рендер таблицы ---------------------------------------------------------
@@ -685,7 +934,45 @@ function fmtRow(
 
 const SEP_ROW = fmtRow('---', '---', '---', '---', '---', '---');
 
-function render(label: string, stats: StatsMap): void {
+function statsToRow(name: string, s: JobStats): RenderRow {
+    return {
+        name,
+        n:   s.count,
+        avg: s.sumD / s.count,
+        p50: pct(s.durations, 50),
+        p95: pct(s.durations, 95),
+        max: s.maxD,
+    };
+}
+
+// Готовит список section-строк к выводу под джобой.
+// Применяет --section-filter и сортирует по --section-order.
+function buildSectionRows(breakdown: SectionBreakdown | undefined): RenderRow[] {
+    if (!breakdown) return [];
+
+    const filterRe = cfg.sectionFilterRe;
+    const names = breakdown.order.filter((name) => {
+        if (!breakdown.stats[name]) return false;
+        if (!cfg.sectionBuiltins && isBuiltinSection(name)) return false;
+        if (filterRe && !filterRe.test(name)) return false;
+        return true;
+    });
+
+    const rows = names.map((name) => statsToRow(name, breakdown.stats[name]!));
+
+    if (cfg.sectionOrder === 'p50') {
+        rows.sort((a, b) => b.p50 - a.p50);
+    } else if (cfg.sectionOrder === 'name') {
+        rows.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    // 'appearance' — сохраняем порядок из breakdown.order
+
+    return rows;
+}
+
+function render(label: string, result: CollectResult): void {
+    const { stats, sections, jobsScanned, jobsWithMarkers } = result;
+
     out(`\n${BOLD_CYAN}=== ${label} ===${CR}\n`);
 
     if (Object.keys(stats).length === 0) {
@@ -698,18 +985,20 @@ function render(label: string, stats: StatsMap): void {
 
     const jobs: RenderRow[] = Object.entries(stats)
         .filter(([name]) => name !== TOTAL_KEY)
-        .map(([name, s]) => ({
-            name,
-            n:   s.count,
-            avg: s.sumD / s.count,
-            p50: pct(s.durations, 50),
-            p95: pct(s.durations, 95),
-            max: s.maxD,
-        }))
+        .map(([name, s]) => statsToRow(name, s))
         .sort((a, b) => b.p50 - a.p50);
 
     for (const j of jobs) {
         out(`${fmtRow(j.name, j.n, j.avg, j.p50, j.p95, j.max)}\n`);
+
+        if (!cfg.section) continue;
+        const sectionRows = buildSectionRows(sections[j.name]);
+        for (let k = 0; k < sectionRows.length; k++) {
+            const isLast = k === sectionRows.length - 1;
+            const prefix = isLast ? '  └─ ' : '  ├─ ';
+            const sr = sectionRows[k]!;
+            out(`${DIM}${fmtRow(prefix + sr.name, sr.n, sr.avg, sr.p50, sr.p95, sr.max)}${CR}\n`);
+        }
     }
 
     const t = stats[TOTAL_KEY];
@@ -728,6 +1017,11 @@ function render(label: string, stats: StatsMap): void {
             `${CR}\n`
         );
     }
+
+    if (cfg.section && jobsScanned > 0) {
+        const hint = jobsWithMarkers === 0 ? ' (no instrumentation?)' : '';
+        out(`${DIM}Sections found in ${jobsWithMarkers}/${jobsScanned} jobs${hint}${CR}\n`);
+    }
 }
 
 // --- Оркестрация ------------------------------------------------------------
@@ -740,8 +1034,8 @@ async function analyze(spec: GroupSpec): Promise<void> {
         return;
     }
     err(`\n${DIM}>>> ${spec.label}: fetching ${ids.length} pipeline(s)${CR}\n`);
-    const stats = await collect(ids);
-    render(spec.label, stats);
+    const result = await collect(ids);
+    render(spec.label, result);
 }
 
 async function main(): Promise<void> {

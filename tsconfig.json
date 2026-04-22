@@ -32,7 +32,9 @@
         "sourceMap": false,
         "newLine": "lf",
         "isolatedModules": true,
-        "verbatimModuleSyntax": false
+        "verbatimModuleSyntax": false,
+        "allowImportingTsExtensions": true,
+        "rewriteRelativeImportExtensions": true
     },
     "include": ["bin/**/*.ts"]
 }
