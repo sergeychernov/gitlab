@@ -1,7 +1,9 @@
 {
-    "description": "GitHub Flow: main + short-lived feature branches + tags for releases",
+    "$schema": "../schemas/config.schema.json",
+    "description": "GitHub Flow: main + short-lived feature branches + MRs + tags for releases",
     "groups": [
         { "label": "main",             "ref": "main" },
+        { "label": "merge requests",   "source": "merge_request_event" },
         { "label": "feature branches", "scope": "branches", "excludeRef": "main" },
         { "label": "tags",             "scope": "tags" }
     ]

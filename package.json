@@ -1,12 +1,13 @@
 {
     "name": "gitlab-pipeline-stats",
-    "version": "1.1.1",
+    "version": "1.1.3",
     "description": "Quick GitLab pipeline stats: avg, p50, p95, and max per job and group. Groups are configured via presets for different release flows.",
     "type": "module",
     "bin": "./dist/gitlab-pipeline-stats.js",
     "files": [
         "dist/",
         "configs/",
+        "schemas/",
         "share/"
     ],
     "engines": {

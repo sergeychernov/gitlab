@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { execSync }  from 'node:child_process';
 
 import { parseTraceSections } from './sections.ts';
+import { readPackageVersion, rewritePresetSchemaUrl } from './preset.ts';
 
 // --- Типы -------------------------------------------------------------------
 
@@ -320,7 +321,11 @@ function cmdInit(presetName: string | undefined): void {
         err(`Available: ${listBuiltinPresets().join(', ')}\n`);
         process.exit(1);
     }
-    out(fs.readFileSync(absPath, 'utf8'));
+    // Подменяем относительный `$schema` (`../schemas/config.schema.json`),
+    // который валиден только в монорепе тулзы, на CDN-URL с привязкой к
+    // версии — иначе в чужом проекте IDE-валидация будет ссылаться в никуда.
+    const raw = fs.readFileSync(absPath, 'utf8');
+    out(rewritePresetSchemaUrl(raw, readPackageVersion(SCRIPT_DIR)));
 }
 
 // --- CLI --------------------------------------------------------------------

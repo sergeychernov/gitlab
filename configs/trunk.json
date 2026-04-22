@@ -1,7 +1,9 @@
 {
-    "description": "Trunk-based: a single main + short-lived branches, releases via CD",
+    "$schema": "../schemas/config.schema.json",
+    "description": "Trunk-based: a single main + short-lived branches + MRs, releases via CD",
     "groups": [
         { "label": "main",                 "ref": "main" },
+        { "label": "merge requests",       "source": "merge_request_event" },
         { "label": "short-lived branches", "scope": "branches", "excludeRef": "main" }
     ]
 }

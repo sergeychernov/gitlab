@@ -173,13 +173,14 @@ gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # redirect to 
 
 ```jsonc
 {
+    "$schema": "https://cdn.jsdelivr.net/npm/gitlab-pipeline-stats@latest/schemas/config.schema.json",
     "description": "Free-form description (optional)",
     "groups": [
         {
             "label": "main",                      // required: table heading
             "ref": "main",                        // server-side: exact ref name (no wildcards)
             "scope": "branches",                  // server-side: branches | tags | finished | running | pending
-            "source": "push",                     // server-side: push | web | trigger | schedule | api | ...
+            "source": "push",                     // server-side: push | web | trigger | schedule | api | merge_request_event | ...
             "status": "success",                  // server-side: success | failed | canceled | ...
             "refPattern": "^release/",            // client-side: regexp matched against ref
             "excludeRef": "main",                 // client-side: exact ref to exclude
@@ -190,6 +191,18 @@ gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # redirect to 
 ```
 
 Every field except `label` is optional. **Server-side filters** are forwarded straight to the GitLab API (`/projects/:id/pipelines?scope=...&ref=...`); **client-side** ones are applied to the response. Wildcards in `ref` are not supported by the GitLab API — use `scope: "branches"` + `refPattern: "^release/"` instead.
+
+> **Note: `scope: "branches"` and merge requests.** GitLab API's `scope=branches` returns only branch-ref pipelines. Merge-request pipelines (`source = merge_request_event`, ref = `refs/merge-requests/<n>/head`) are **not** included — if you have jobs that only run on MRs (`rules:if: $CI_PIPELINE_SOURCE == "merge_request_event"`), add a separate group `{ "label": "merge requests", "source": "merge_request_event" }`. All bundled presets already include it.
+
+### `$schema` and IDE support
+
+Bundled presets ship with a `$schema` field pointing to the JSON schema for this config format ([`schemas/config.schema.json`](./schemas/config.schema.json)). When you run `init`, the relative path inside the bundle is automatically rewritten to a stable CDN URL pinned to your installed CLI version, e.g.:
+
+```jsonc
+"$schema": "https://cdn.jsdelivr.net/npm/gitlab-pipeline-stats@1.1.2/schemas/config.schema.json"
+```
+
+This gives you autocompletion, enum hints (`scope`, `source`, `status`) and typo detection in any editor that supports JSON Schema (VSCode, Cursor, JetBrains, etc.) — no extra setup. The schema is purely an editor-time hint; the CLI ships its own runtime validator and ignores `$schema`.
 
 ### Group examples
 
@@ -502,13 +515,14 @@ gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # перена
 
 ```jsonc
 {
+    "$schema": "https://cdn.jsdelivr.net/npm/gitlab-pipeline-stats@latest/schemas/config.schema.json",
     "description": "Произвольное описание (опционально)",
     "groups": [
         {
             "label": "main",                      // обязательное: что показать в заголовке таблицы
             "ref": "main",                        // server-side: точное имя ref (без wildcards)
             "scope": "branches",                  // server-side: branches | tags | finished | running | pending
-            "source": "push",                     // server-side: push | web | trigger | schedule | api | ...
+            "source": "push",                     // server-side: push | web | trigger | schedule | api | merge_request_event | ...
             "status": "success",                  // server-side: success | failed | canceled | ...
             "refPattern": "^release/",            // client-side: регэксп для фильтра по ref
             "excludeRef": "main",                 // client-side: точное имя для исключения
@@ -519,6 +533,18 @@ gitlab-pipeline-stats init gitflow > gitlab-pipeline-stats.json   # перена
 ```
 
 Все поля кроме `label` опциональны. **Server-side фильтры** уходят в API GitLab напрямую (`/projects/:id/pipelines?scope=...&ref=...`), **client-side** применяются к ответу. Wildcards в `ref` GitLab API не поддерживает — используй `scope: "branches"` + `refPattern: "^release/"`.
+
+> **Важно: `scope: "branches"` и MR-пайплайны.** GitLab API на `scope=branches` отдаёт только пайплайны на branch-рефах. MR-пайплайны (`source = merge_request_event`, ref `refs/merge-requests/<n>/head`) под него **не попадают** — если у тебя есть джобы, которые крутятся только в MR (`rules:if: $CI_PIPELINE_SOURCE == "merge_request_event"`), добавь отдельную группу `{ "label": "merge requests", "source": "merge_request_event" }`. Во всех bundled-пресетах она уже есть.
+
+### `$schema` и поддержка в IDE
+
+Bundled-пресеты содержат поле `$schema`, ссылающееся на JSON Schema формата ([`schemas/config.schema.json`](./schemas/config.schema.json)). При запуске `init` относительный путь внутри пакета автоматически переписывается на стабильный CDN-URL, привязанный к версии установленного CLI, например:
+
+```jsonc
+"$schema": "https://cdn.jsdelivr.net/npm/gitlab-pipeline-stats@1.1.2/schemas/config.schema.json"
+```
+
+Это даёт автодополнение, подсказки по перечислениям (`scope`, `source`, `status`) и подсветку опечаток в любом редакторе с поддержкой JSON Schema (VSCode, Cursor, JetBrains и пр.) — без какой-либо ручной настройки. Схема — чисто IDE-сахар; CLI имеет свой собственный валидатор и поле `$schema` игнорирует.
 
 ### Примеры групп
 

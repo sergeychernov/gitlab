@@ -1,12 +1,13 @@
 {
     "$schema": "../schemas/config.schema.json",
-    "description": "Git Flow: main, develop, release/*, feature/*, hotfix/*, tags",
+    "description": "Git Flow: main, develop, release/*, feature/*, hotfix/*, MRs, tags",
     "groups": [
-        { "label": "main",       "ref": "main" },
-        { "label": "develop",    "ref": "develop" },
-        { "label": "release/*",  "scope": "branches", "refPattern": "^release/" },
-        { "label": "feature/*",  "scope": "branches", "refPattern": "^feature/" },
-        { "label": "hotfix/*",   "scope": "branches", "refPattern": "^hotfix/" },
-        { "label": "tags",       "scope": "tags" }
+        { "label": "main",           "ref": "main" },
+        { "label": "develop",        "ref": "develop" },
+        { "label": "merge requests", "source": "merge_request_event" },
+        { "label": "release/*",      "scope": "branches", "refPattern": "^release/" },
+        { "label": "feature/*",      "scope": "branches", "refPattern": "^feature/" },
+        { "label": "hotfix/*",       "scope": "branches", "refPattern": "^hotfix/" },
+        { "label": "tags",           "scope": "tags" }
     ]
 }

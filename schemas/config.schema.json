@@ -1,0 +1,102 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "https://github.com/sergeychernov/gitlab/schemas/config.schema.json",
+    "title": "gitlab-pipeline-stats config",
+    "description": "Configuration file for the gitlab-pipeline-stats CLI: a list of pipeline groups (server-side and/or client-side filters) to compute per-job stats over.",
+    "type": "object",
+    "required": ["groups"],
+    "additionalProperties": false,
+    "properties": {
+        "$schema": {
+            "type": "string",
+            "description": "URI of the JSON schema used to validate this file (informational, ignored at runtime)."
+        },
+        "description": {
+            "type": "string",
+            "description": "Human-readable summary of the config (e.g. release flow it models). Shown nowhere by the CLI; useful in `list-presets` and editors."
+        },
+        "groups": {
+            "type": "array",
+            "description": "Pipeline groups to fetch and aggregate. Each group becomes a separate section in the output.",
+            "minItems": 1,
+            "items": { "$ref": "#/definitions/GroupSpec" }
+        }
+    },
+    "definitions": {
+        "GroupSpec": {
+            "type": "object",
+            "description": "One pipeline group. Server-side filters (ref/scope/source/status) are passed to GitLab's /pipelines API; client-side filters (refPattern/excludeRef/excludeRefPattern) are applied to the response.",
+            "required": ["label"],
+            "additionalProperties": false,
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Group label printed as the section header (=== <label> ===)."
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Exact ref to filter by (e.g. \"main\", \"develop\"). Server-side: passed to GitLab as ?ref=."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["running", "pending", "finished", "branches", "tags"],
+                    "description": "Pipeline scope (server-side, ?scope=). Note: \"branches\" returns only branch-ref pipelines; merge-request pipelines (refs/merge-requests/N/head) are NOT included — use source: merge_request_event for those."
+                },
+                "source": {
+                    "type": "string",
+                    "enum": [
+                        "push",
+                        "web",
+                        "trigger",
+                        "schedule",
+                        "api",
+                        "external",
+                        "pipeline",
+                        "chat",
+                        "webide",
+                        "merge_request_event",
+                        "external_pull_request_event",
+                        "parent_pipeline",
+                        "ondemand_dast_scan",
+                        "ondemand_dast_validation",
+                        "security_orchestration_policy",
+                        "container_registry_push"
+                    ],
+                    "description": "Pipeline source (server-side, ?source=). Use merge_request_event to capture MR pipelines, which are missed by scope=branches."
+                },
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "created",
+                        "waiting_for_resource",
+                        "preparing",
+                        "pending",
+                        "running",
+                        "success",
+                        "failed",
+                        "canceled",
+                        "skipped",
+                        "manual",
+                        "scheduled"
+                    ],
+                    "description": "Pipeline status (server-side, ?status=). For job-level status filtering use the CLI flag --status-filter."
+                },
+                "refPattern": {
+                    "type": "string",
+                    "format": "regex",
+                    "description": "Client-side regex applied to pipeline.ref. Pipelines whose ref does NOT match are dropped after fetch."
+                },
+                "excludeRef": {
+                    "type": "string",
+                    "description": "Client-side: drop pipelines whose ref equals this value exactly."
+                },
+                "excludeRefPattern": {
+                    "type": "string",
+                    "format": "regex",
+                    "description": "Client-side regex applied to pipeline.ref. Pipelines whose ref MATCHES are dropped after fetch."
+                }
+            }
+        }
+    }
+}

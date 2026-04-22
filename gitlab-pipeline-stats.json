@@ -1,7 +1,9 @@
 {
+    "$schema": "./schemas/config.schema.json",
     "description": "Tags-flow: master + tags для релизов + прочие ветки (текущий легаси-дефолт)",
     "groups": [
 
-        { "label": "branches != master",  "scope": "branches", "excludeRef": "master" }
+        { "label": "branches != master",  "scope": "branches", "excludeRef": "master" },
+        { "label": "merge requests",        "source": "merge_request_event" }
     ]
 }
